@@ -1,3 +1,4 @@
+// v4 - fixed white background removal
 const CACHE = 'line-sticker-cutter-v3';
 const APP_SHELL = ['./index.html', './manifest.json', './icon.svg'];
 self.addEventListener('install', e => {
