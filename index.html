@@ -786,6 +786,20 @@ function removeWhiteBg(canvas, tolerance, bgColor = 'white') {
     }
   }
 
+  // ── 綠底專用第二輪：清除邊緣抗鋸齒殘留的帶綠半透明像素 ──
+  // ChatGPT 生圖在輪廓邊緣會把綠底與主體混色，產生半透明綠色像素。
+  // 條件：綠色是 RGB 三色最高 且 g > 150 → 直接透明化。
+  if (bgColor === 'green') {
+    for (let i = 0; i < w * h; i++) {
+      const pi = i * 4;
+      if (d[pi + 3] === 0) continue; // 已透明跳過
+      const r2 = d[pi], g2 = d[pi + 1], b2 = d[pi + 2];
+      if (g2 > 150 && g2 > r2 && g2 > b2) {
+        d[pi + 3] = 0;
+      }
+    }
+  }
+
   ctx.putImageData(id, 0, 0);
 }
 
