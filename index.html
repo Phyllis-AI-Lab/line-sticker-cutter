@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
@@ -621,16 +622,81 @@ function loadImg(src) {
   });
 }
 
+// ─── 動態偵測分隔線，解決不同尺寸大圖切歪的問題 ───────────────
+// 原本用 canvas.width / cols 等分切割，每次 ChatGPT 生圖尺寸不同就切錯。
+// 新邏輯：掃描每行/列的平均亮度，找出真正的白色（或近白色）分隔線位置。
+// ──────────────────────────────────────────────────────────────
+function detectGridLines(canvas, count, direction) {
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const id = ctx.getImageData(0, 0, W, H);
+  const d = id.data;
+  const size = direction === 'row' ? H : W;
+  const cross = direction === 'row' ? W : H;
+
+  // 計算每行（或列）的平均亮度
+  const brightness = new Float32Array(size);
+  for (let i = 0; i < size; i++) {
+    let sum = 0;
+    for (let j = 0; j < cross; j++) {
+      const pi = direction === 'row'
+        ? (i * W + j) * 4
+        : (j * W + i) * 4;
+      sum += (d[pi] + d[pi + 1] + d[pi + 2]) / 3;
+    }
+    brightness[i] = sum / cross;
+  }
+
+  // 找亮度峰值（分隔線候選）：亮度 > 240 的連續區段取中心
+  const threshold = 240;
+  const candidates = [];
+  let inBright = false, start = 0;
+  for (let i = 0; i < size; i++) {
+    if (brightness[i] >= threshold && !inBright) { inBright = true; start = i; }
+    else if (brightness[i] < threshold && inBright) {
+      candidates.push(Math.round((start + i - 1) / 2));
+      inBright = false;
+    }
+  }
+  if (inBright) candidates.push(Math.round((start + size - 1) / 2));
+
+  // 從候選中選出 count-1 條最均勻分布的分隔線
+  // 策略：期望位置 = size * k / count，選最近的候選
+  const expected_step = size / count;
+  const cuts = [0];
+  for (let k = 1; k < count; k++) {
+    const expected = expected_step * k;
+    // 在期望位置 ±20% 範圍內找最近候選
+    const margin = expected_step * 0.2;
+    let best = null, bestDist = Infinity;
+    for (const c of candidates) {
+      const dist = Math.abs(c - expected);
+      if (dist < margin && dist < bestDist) { best = c; bestDist = dist; }
+    }
+    // 找不到就用等分
+    cuts.push(best !== null ? best : Math.round(expected));
+  }
+  cuts.push(size);
+  return cuts;
+}
+
 function sliceFromCanvas(canvas, cols, rows) {
-  const pw = canvas.width / cols, ph = canvas.height / rows;
+  // 動態偵測行、列分隔線
+  const colCuts = detectGridLines(canvas, cols, 'col'); // x 座標
+  const rowCuts = detectGridLines(canvas, rows, 'row'); // y 座標
+
+  const MARGIN = 3; // 內縮避免吃到分隔線邊緣
   const out = [];
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
+      const x0 = colCuts[c] + MARGIN;
+      const y0 = rowCuts[r] + MARGIN;
+      const x1 = colCuts[c + 1] - MARGIN;
+      const y1 = rowCuts[r + 1] - MARGIN;
+      const pw = x1 - x0, ph = y1 - y0;
       const cv = document.createElement('canvas');
-      cv.width = Math.round(pw); cv.height = Math.round(ph);
-      cv.getContext('2d').drawImage(canvas,
-        Math.round(c * pw), Math.round(r * ph), Math.round(pw), Math.round(ph),
-        0, 0, cv.width, cv.height);
+      cv.width = pw; cv.height = ph;
+      cv.getContext('2d').drawImage(canvas, x0, y0, pw, ph, 0, 0, pw, ph);
       out.push({ canvas: cv, col: c, row: r });
     }
   }
