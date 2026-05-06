@@ -386,16 +386,20 @@
       </div>
     </div>
     <div class="setting-row">
-      <div class="setting-label">白色背景去除</div>
+      <div class="setting-label">背景去除</div>
       <div class="toggle-row">
         <div class="toggle-label">
-          自動去白背景
-          <small>將白色/近白色像素轉為透明（輸出 PNG）</small>
+          自動去背景
+          <small>將背景色像素轉為透明（輸出 PNG）</small>
         </div>
         <label class="toggle">
           <input type="checkbox" id="removeBgToggle" checked>
           <span class="toggle-track"></span>
         </label>
+      </div>
+      <div id="bgColorRow" class="btn-group" style="margin:0 14px 10px;">
+        <button class="opt-btn active" data-bgcol="white">白底去背<small>ChatGPT 白背景</small></button>
+        <button class="opt-btn" data-bgcol="green">🟢 綠底去背<small>#00FF00 色鍵</small></button>
       </div>
       <div id="toleranceRow" class="tolerance-row">
         <label>去背靈敏度</label>
@@ -478,7 +482,7 @@ const S = {
   files: [], results: [],
   grid: '4x4', size: '370x320', scale: 'fit',
   customW: 370, customH: 320,
-  removeBg: true, bgTol: 18,
+  removeBg: true, bgTol: 18, bgColor: 'white',
   autoMeta: true, autoTrim: false
 };
 
@@ -560,10 +564,21 @@ customH.addEventListener('input', () => { S.customH = Math.max(1, parseInt(custo
 removeBgToggle.addEventListener('change', () => {
   S.removeBg = removeBgToggle.checked;
   toleranceRow.classList.toggle('hidden', !S.removeBg);
+  $('bgColorRow').classList.toggle('hidden', !S.removeBg);
 });
 toleranceSlider.addEventListener('input', () => {
   S.bgTol = parseInt(toleranceSlider.value);
   toleranceVal.textContent = S.bgTol;
+});
+$('bgColorRow').addEventListener('click', e => {
+  const btn = e.target.closest('[data-bgcol]');
+  if (!btn) return;
+  document.querySelectorAll('#bgColorRow .opt-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  S.bgColor = btn.dataset.bgcol;
+  // 綠底靈敏度建議值調高
+  if (S.bgColor === 'green') { toleranceSlider.value = 30; S.bgTol = 30; toleranceVal.textContent = 30; }
+  else { toleranceSlider.value = 18; S.bgTol = 18; toleranceVal.textContent = 18; }
 });
 autoMetaToggle.addEventListener('change', () => { S.autoMeta = autoMetaToggle.checked; });
 autoTrimToggle.addEventListener('change', () => { S.autoTrim = autoTrimToggle.checked; });
@@ -587,7 +602,7 @@ processBtn.addEventListener('click', async () => {
     const srcCanvas = makeCanvas(img);
     if (S.removeBg) {
       progressText.textContent = `全圖去背 ${fi + 1} / ${S.files.length}…`;
-      removeWhiteBg(srcCanvas, S.bgTol);
+      removeWhiteBg(srcCanvas, S.bgTol, S.bgColor);
       await tick();
     }
 
@@ -721,22 +736,25 @@ function scaleCanvas(src, tw, th, mode) {
   return cv;
 }
 
-// ─── 修正後的去白背景函式 ───────────────────────────────
-// 邏輯：從圖片四邊 flood-fill，只把「從邊緣連通過來的近白色像素」設為透明。
-// 修正重點：
-//   1. 背景像素直接 alpha=0（不再用漸層公式，避免半透明白色色塊）
-//   2. 移除 Phase 2 小區塊清除（那是為棋盤格設計的，對白底圖會誤刪）
-// ──────────────────────────────────────────────────────
-function removeWhiteBg(canvas, tolerance) {
+// ─── 通用去背函式（白底 / 綠底）───────────────────────────
+// 從圖片四邊 flood-fill，只把「從邊緣連通的背景色像素」設為透明。
+// bgColor: 'white' → 目標 (255,255,255)；'green' → 目標 (0,255,0)
+// ──────────────────────────────────────────────────────────
+function removeWhiteBg(canvas, tolerance, bgColor = 'white') {
   const ctx = canvas.getContext('2d');
   const w = canvas.width, h = canvas.height;
   const id = ctx.getImageData(0, 0, w, h);
   const d = id.data;
-  const t2 = tolerance * tolerance * 3; // 最大歐氏距離平方 (RGB 3 通道)
+  const t2 = tolerance * tolerance * 3;
 
-  // 判斷是否為「近白色」像素
+  // 目標背景色
+  const tr = bgColor === 'green' ? 0   : 255;
+  const tg = bgColor === 'green' ? 255 : 255;
+  const tb = bgColor === 'green' ? 0   : 255;
+
   function isBg(pi) {
-    const dr = 255 - d[pi], dg = 255 - d[pi + 1], db = 255 - d[pi + 2];
+    if (d[pi + 3] === 0) return true; // 已透明的算背景
+    const dr = d[pi] - tr, dg = d[pi + 1] - tg, db = d[pi + 2] - tb;
     return dr * dr + dg * dg + db * db < t2;
   }
 
@@ -748,15 +766,12 @@ function removeWhiteBg(canvas, tolerance) {
     if (!visited[i] && isBg(i * 4)) { visited[i] = 1; queue.push(i); }
   }
 
-  // 從四邊播種
   for (let x = 0; x < w; x++) { seed(x, 0); seed(x, h - 1); }
   for (let y = 1; y < h - 1; y++) { seed(0, y); seed(w - 1, y); }
 
-  // BFS：只清除從邊緣連通的背景白色
   while (queue.length) {
     const i = queue.pop();
-    d[i * 4 + 3] = 0; // ← 直接透明，不做漸層
-
+    d[i * 4 + 3] = 0;
     const x = i % w, y = (i / w) | 0;
     const neighbors = [
       x > 0     ? i - 1 : -1,
