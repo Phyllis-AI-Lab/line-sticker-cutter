@@ -435,9 +435,32 @@
     </div>
   </div>
 
-  <button class="process-btn" id="processBtn" disabled>
-    ✂️ 開始批量切割
-  </button>
+  <div class="btn-row" style="display:flex; gap:10px; margin-bottom:14px;">
+    <button class="process-btn" id="previewBtn" style="flex:1; margin:0; background:#1976D2;" disabled>
+      🔍 預覽切割線
+    </button>
+    <button class="process-btn" id="processBtn" style="flex:1; margin:0;" disabled>
+      ✂️ 開始批量切割
+    </button>
+  </div>
+
+  <div class="card hidden" id="previewCard">
+    <div class="card-title">
+      <span class="step-num">3</span>調整切割線
+      <small style="margin-left:auto; font-weight:400; color:var(--text-2); font-size:0.72rem;">拖動藍/紅線可微調</small>
+    </div>
+    <div id="previewContainer" style="position:relative; display:inline-block; max-width:100%; touch-action:none; user-select:none;">
+      <canvas id="previewCanvas" style="display:block; max-width:100%; height:auto; border:1px solid var(--border); border-radius:8px;"></canvas>
+      <div id="lineOverlay" style="position:absolute; inset:0; pointer-events:none;"></div>
+    </div>
+    <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
+      <button class="act-btn" id="resetLinesBtn">↺ 重設為自動偵測</button>
+      <button class="act-btn" id="evenLinesBtn">⊞ 平均分配</button>
+      <span style="flex:1;"></span>
+      <button class="act-btn primary" id="confirmCutBtn">✓ 用這些線切割</button>
+    </div>
+    <div id="lineInfo" style="margin-top:10px; font-size:0.75rem; color:var(--text-2); font-family:monospace;"></div>
+  </div>
 
   <div class="card hidden" id="resultsCard">
     <div class="results-header">
@@ -483,7 +506,13 @@ const S = {
   grid: '4x4', size: '370x320', scale: 'fit',
   customW: 370, customH: 320,
   removeBg: true, bgTol: 18, bgColor: 'white',
-  autoMeta: true, autoTrim: false
+  autoMeta: true, autoTrim: false,
+  // 預覽切割線狀態
+  previewFileIdx: 0,        // 用第幾張圖預覽
+  manualColCuts: null,      // [0, x1, x2, x3, W] 手動指定的列切割位置；null=自動
+  manualRowCuts: null,      // [0, y1, y2, y3, H] 手動指定的行切割位置
+  previewCanvasW: 0,        // 原圖寬（real px）
+  previewCanvasH: 0         // 原圖高
 };
 
 const $ = id => document.getElementById(id);
@@ -543,6 +572,7 @@ function renderFiles() {
     fileList.appendChild(d);
   });
   processBtn.disabled = S.files.length === 0;
+  $('previewBtn').disabled = S.files.length === 0;
 }
 
 function bindGroup(groupId, key) {
@@ -606,7 +636,10 @@ processBtn.addEventListener('click', async () => {
       await tick();
     }
 
-    const pieces = sliceFromCanvas(srcCanvas, cols, rows);
+    const pieces = sliceFromCanvas(srcCanvas, cols, rows,
+      S.manualColCuts && fi === S.previewFileIdx ? S.manualColCuts : null,
+      S.manualRowCuts && fi === S.previewFileIdx ? S.manualRowCuts : null
+    );
     const baseName = fd.name.replace(/\.[^/.]+$/, '');
 
     for (const p of pieces) {
@@ -662,45 +695,49 @@ function detectGridLines(canvas, count, direction) {
   }
 
   // 找亮度帶（分隔線候選）：亮度 > 220 的連續區段，記錄中心與寬度
+  // 寬度 < 8px 的視為雜訊，直接排除
   const threshold = 220;
+  const MIN_BAND_WIDTH = 8;
   const candidates = []; // { center, width }
   let inBright = false, start = 0;
   for (let i = 0; i < size; i++) {
     if (brightness[i] >= threshold && !inBright) { inBright = true; start = i; }
     else if (brightness[i] < threshold && inBright) {
       const width = i - start;
-      candidates.push({ center: Math.round((start + i - 1) / 2), width });
+      if (width >= MIN_BAND_WIDTH) candidates.push({ center: Math.round((start + i - 1) / 2), width });
       inBright = false;
     }
   }
   if (inBright) {
     const width = size - start;
-    candidates.push({ center: Math.round((start + size - 1) / 2), width });
+    if (width >= MIN_BAND_WIDTH) candidates.push({ center: Math.round((start + size - 1) / 2), width });
   }
 
   // 從候選中選出 count-1 條分隔線
-  // 策略：期望位置 ±35% 範圍內，優先選最寬的亮帶（最可靠的空白間隔）
+  // 策略：期望位置 ±40% 範圍內，優先選最寬的亮帶
+  // 圖片頭尾邊緣亮帶（中心距邊緣 < expected_step*0.3）排除，避免把邊框誤認為分隔線
   const expected_step = size / count;
+  const edgeGuard = expected_step * 0.3;
   const cuts = [0];
   for (let k = 1; k < count; k++) {
     const expected = expected_step * k;
-    const margin = expected_step * 0.35;
+    const margin = expected_step * 0.40;
     let best = null, bestWidth = -1;
     for (const c of candidates) {
+      if (c.center < edgeGuard || c.center > size - edgeGuard) continue;
       const dist = Math.abs(c.center - expected);
       if (dist < margin && c.width > bestWidth) { best = c.center; bestWidth = c.width; }
     }
-    // 找不到就用等分
     cuts.push(best !== null ? best : Math.round(expected));
   }
   cuts.push(size);
   return cuts;
 }
 
-function sliceFromCanvas(canvas, cols, rows) {
-  // 動態偵測行、列分隔線
-  const colCuts = detectGridLines(canvas, cols, 'col'); // x 座標
-  const rowCuts = detectGridLines(canvas, rows, 'row'); // y 座標
+function sliceFromCanvas(canvas, cols, rows, manualColCuts = null, manualRowCuts = null) {
+  // 動態偵測行、列分隔線；若有手動指定，優先使用
+  const colCuts = manualColCuts || detectGridLines(canvas, cols, 'col');
+  const rowCuts = manualRowCuts || detectGridLines(canvas, rows, 'row');
 
   const MARGIN = 3; // 內縮避免吃到分隔線邊緣
   const out = [];
@@ -925,6 +962,203 @@ function showToast(msg, ms = 3000) {
   clearTimeout(_toastTimer);
   _toastTimer = setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 320); }, ms);
 }
+
+// ─── 預覽切割線：上傳第一張圖、跑自動偵測、允許拖動微調 ───
+const previewCard = $('previewCard');
+const previewCanvas = $('previewCanvas');
+const lineOverlay = $('lineOverlay');
+const lineInfo = $('lineInfo');
+
+$('previewBtn').addEventListener('click', async () => {
+  if (S.files.length === 0) return;
+  S.previewFileIdx = 0;
+  const fd = S.files[0];
+  let img;
+  try { img = await loadImg(fd.dataUrl); }
+  catch { showToast(`無法載入 ${fd.name}`); return; }
+
+  // 畫到預覽 canvas（保留原始尺寸做計算，CSS 縮放顯示）
+  const cv = previewCanvas;
+  cv.width = img.naturalWidth;
+  cv.height = img.naturalHeight;
+  cv.getContext('2d').drawImage(img, 0, 0);
+  S.previewCanvasW = img.naturalWidth;
+  S.previewCanvasH = img.naturalHeight;
+
+  // 用「臨時 canvas + 去背」來跑自動偵測（去背後白底更乾淨）
+  const tempCv = makeCanvas(img);
+  if (S.removeBg) removeWhiteBg(tempCv, S.bgTol, S.bgColor);
+
+  const { cols, rows } = GRIDS[S.grid];
+  S.manualColCuts = detectGridLines(tempCv, cols, 'col');
+  S.manualRowCuts = detectGridLines(tempCv, rows, 'row');
+
+  previewCard.classList.remove('hidden');
+  drawGuideLines();
+  previewCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
+
+function drawGuideLines() {
+  if (!S.manualColCuts || !S.manualRowCuts) return;
+  lineOverlay.innerHTML = '';
+  // 取得 canvas 顯示尺寸（CSS 縮放後）
+  const rect = previewCanvas.getBoundingClientRect();
+  const scaleX = rect.width / S.previewCanvasW;
+  const scaleY = rect.height / S.previewCanvasH;
+  lineOverlay.style.width = rect.width + 'px';
+  lineOverlay.style.height = rect.height + 'px';
+
+  // 列切割線（垂直線，藍色）：cuts[1]~cuts[length-2]，跳過頭尾的 0 和 W
+  for (let k = 1; k < S.manualColCuts.length - 1; k++) {
+    const x = S.manualColCuts[k];
+    const line = document.createElement('div');
+    line.className = 'guide-line guide-col';
+    line.dataset.kind = 'col';
+    line.dataset.idx = k;
+    line.style.cssText = `
+      position:absolute; top:0; bottom:0;
+      left:${x * scaleX}px;
+      width:3px; margin-left:-1.5px;
+      background:#1976D2; cursor:ew-resize;
+      pointer-events:auto; z-index:10;
+      box-shadow:0 0 0 1px rgba(255,255,255,0.6);
+    `;
+    // 加一個更寬的觸控區
+    const touch = document.createElement('div');
+    touch.style.cssText = 'position:absolute; top:0; bottom:0; left:-12px; right:-12px; cursor:ew-resize;';
+    line.appendChild(touch);
+    lineOverlay.appendChild(line);
+  }
+
+  // 行切割線（水平線，紅色）
+  for (let k = 1; k < S.manualRowCuts.length - 1; k++) {
+    const y = S.manualRowCuts[k];
+    const line = document.createElement('div');
+    line.className = 'guide-line guide-row';
+    line.dataset.kind = 'row';
+    line.dataset.idx = k;
+    line.style.cssText = `
+      position:absolute; left:0; right:0;
+      top:${y * scaleY}px;
+      height:3px; margin-top:-1.5px;
+      background:#E53935; cursor:ns-resize;
+      pointer-events:auto; z-index:10;
+      box-shadow:0 0 0 1px rgba(255,255,255,0.6);
+    `;
+    const touch = document.createElement('div');
+    touch.style.cssText = 'position:absolute; left:0; right:0; top:-12px; bottom:-12px; cursor:ns-resize;';
+    line.appendChild(touch);
+    lineOverlay.appendChild(line);
+  }
+
+  attachLineDrag();
+  updateLineInfo();
+}
+
+function attachLineDrag() {
+  const lines = lineOverlay.querySelectorAll('.guide-line');
+  lines.forEach(line => {
+    let dragging = false;
+    let startCoord = 0, startVal = 0;
+
+    const onDown = (e) => {
+      e.preventDefault();
+      dragging = true;
+      const point = e.touches ? e.touches[0] : e;
+      const kind = line.dataset.kind;
+      startCoord = kind === 'col' ? point.clientX : point.clientY;
+      const idx = parseInt(line.dataset.idx);
+      startVal = kind === 'col' ? S.manualColCuts[idx] : S.manualRowCuts[idx];
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('touchmove', onMove, { passive: false });
+      document.addEventListener('mouseup', onUp);
+      document.addEventListener('touchend', onUp);
+    };
+
+    const onMove = (e) => {
+      if (!dragging) return;
+      e.preventDefault();
+      const point = e.touches ? e.touches[0] : e;
+      const rect = previewCanvas.getBoundingClientRect();
+      const kind = line.dataset.kind;
+      const scaleX = rect.width / S.previewCanvasW;
+      const scaleY = rect.height / S.previewCanvasH;
+      const idx = parseInt(line.dataset.idx);
+
+      if (kind === 'col') {
+        const delta = (point.clientX - startCoord) / scaleX;
+        let newVal = Math.round(startVal + delta);
+        // 限制不能跨過鄰居（保留 10px 間隔）
+        const lo = S.manualColCuts[idx - 1] + 10;
+        const hi = S.manualColCuts[idx + 1] - 10;
+        newVal = Math.max(lo, Math.min(hi, newVal));
+        S.manualColCuts[idx] = newVal;
+        line.style.left = (newVal * scaleX) + 'px';
+      } else {
+        const delta = (point.clientY - startCoord) / scaleY;
+        let newVal = Math.round(startVal + delta);
+        const lo = S.manualRowCuts[idx - 1] + 10;
+        const hi = S.manualRowCuts[idx + 1] - 10;
+        newVal = Math.max(lo, Math.min(hi, newVal));
+        S.manualRowCuts[idx] = newVal;
+        line.style.top = (newVal * scaleY) + 'px';
+      }
+      updateLineInfo();
+    };
+
+    const onUp = () => {
+      dragging = false;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('touchmove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.removeEventListener('touchend', onUp);
+    };
+
+    line.addEventListener('mousedown', onDown);
+    line.addEventListener('touchstart', onDown, { passive: false });
+  });
+}
+
+function updateLineInfo() {
+  const c = S.manualColCuts.slice(1, -1).join(', ');
+  const r = S.manualRowCuts.slice(1, -1).join(', ');
+  lineInfo.textContent = `🔵 列切割 X: ${c}　🔴 行切割 Y: ${r}　原圖 ${S.previewCanvasW}×${S.previewCanvasH}`;
+}
+
+window.addEventListener('resize', () => {
+  if (!previewCard.classList.contains('hidden')) drawGuideLines();
+});
+
+$('resetLinesBtn').addEventListener('click', async () => {
+  if (S.files.length === 0) return;
+  const fd = S.files[S.previewFileIdx];
+  const img = await loadImg(fd.dataUrl);
+  const tempCv = makeCanvas(img);
+  if (S.removeBg) removeWhiteBg(tempCv, S.bgTol, S.bgColor);
+  const { cols, rows } = GRIDS[S.grid];
+  S.manualColCuts = detectGridLines(tempCv, cols, 'col');
+  S.manualRowCuts = detectGridLines(tempCv, rows, 'row');
+  drawGuideLines();
+  showToast('已重設為自動偵測');
+});
+
+$('evenLinesBtn').addEventListener('click', () => {
+  const { cols, rows } = GRIDS[S.grid];
+  S.manualColCuts = [0];
+  for (let k = 1; k < cols; k++) S.manualColCuts.push(Math.round(S.previewCanvasW * k / cols));
+  S.manualColCuts.push(S.previewCanvasW);
+  S.manualRowCuts = [0];
+  for (let k = 1; k < rows; k++) S.manualRowCuts.push(Math.round(S.previewCanvasH * k / rows));
+  S.manualRowCuts.push(S.previewCanvasH);
+  drawGuideLines();
+  showToast('已平均分配');
+});
+
+$('confirmCutBtn').addEventListener('click', () => {
+  // 直接觸發 processBtn 的點擊行為
+  processBtn.click();
+});
+
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.getRegistrations().then(regs => { regs.forEach(r => r.unregister()); });
