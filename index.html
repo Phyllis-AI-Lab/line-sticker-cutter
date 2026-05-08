@@ -354,11 +354,16 @@
     <div class="setting-row">
       <div class="setting-label">切割格式</div>
       <div class="btn-group" id="gridGroup">
-        <button class="opt-btn" data-grid="2x2">2×2<small>4 張</small></button>
-        <button class="opt-btn" data-grid="3x3">3×3<small>9 張</small></button>
-        <button class="opt-btn active" data-grid="4x4">4×4<small>16 張</small></button>
-        <button class="opt-btn" data-grid="4x8">4×8<small>32 張</small></button>
-        <button class="opt-btn" data-grid="8x4">8×4<small>32 張<span class="new-badge">NEW</span></small></button>
+        <button class="opt-btn" data-grid="8">8 張<small>4×2</small></button>
+        <button class="opt-btn active" data-grid="16">16 張<small>4×4</small></button>
+        <button class="opt-btn" data-grid="24">24 張<small>6×4</small></button>
+        <button class="opt-btn" data-grid="32">32 張<small>8×4</small></button>
+        <button class="opt-btn" data-grid="40">40 張<small>8×5</small></button>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px; margin-top:9px;">
+        <span style="font-size:0.72rem; color:var(--text-2);">排法</span>
+        <button class="act-btn" id="swapLayoutBtn" style="font-size:0.72rem; padding:4px 10px;" disabled>↔ 切換橫/直排</button>
+        <span id="layoutHint" style="font-size:0.72rem; color:var(--primary-dark); font-weight:600;"></span>
       </div>
     </div>
     <div class="setting-row">
@@ -487,12 +492,14 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script>
+// LINE 官方貼圖張數：8 / 16 / 24 / 32 / 40
+// 每個張數提供預設排法（橫向優先）與備選排法
 const GRIDS = {
-  '2x2': { cols: 2, rows: 2 },
-  '3x3': { cols: 3, rows: 3 },
-  '4x4': { cols: 4, rows: 4 },
-  '4x8': { cols: 4, rows: 8 },
-  '8x4': { cols: 8, rows: 4 }
+  '8':  { cols: 4, rows: 2, alt: { cols: 2, rows: 4 } },
+  '16': { cols: 4, rows: 4 },
+  '24': { cols: 6, rows: 4, alt: { cols: 4, rows: 6 } },
+  '32': { cols: 8, rows: 4, alt: { cols: 4, rows: 8 } },
+  '40': { cols: 8, rows: 5, alt: { cols: 5, rows: 8 } }
 };
 const SIZES = {
   '370x320': { w: 370, h: 320 },
@@ -501,9 +508,29 @@ const SIZES = {
   '96x74':   { w: 96,  h: 74  }
 };
 
+// 取目前實際使用的 cols/rows，考慮 layoutFlipped
+function getGridLayout() {
+  const g = GRIDS[S.grid];
+  if (!g) return { cols: 4, rows: 4 };
+  if (S.layoutFlipped && g.alt) return { cols: g.alt.cols, rows: g.alt.rows };
+  return { cols: g.cols, rows: g.rows };
+}
+
+function updateLayoutHint() {
+  const g = GRIDS[S.grid];
+  const swapBtn = $('swapLayoutBtn');
+  const hint = $('layoutHint');
+  if (!g) return;
+  const layout = getGridLayout();
+  hint.textContent = `${layout.cols}×${layout.rows}`;
+  swapBtn.disabled = !g.alt;
+  swapBtn.style.opacity = g.alt ? '1' : '0.4';
+}
+
 const S = {
   files: [], results: [],
-  grid: '4x4', size: '370x320', scale: 'fit',
+  grid: '16', size: '370x320', scale: 'fit',
+  layoutFlipped: false,  // 是否切換到 alt 排法
   customW: 370, customH: 320,
   removeBg: true, bgTol: 18, bgColor: 'white',
   autoMeta: true, autoTrim: false,
@@ -583,11 +610,23 @@ function bindGroup(groupId, key) {
     btn.classList.add('active');
     S[key] = btn.dataset[key];
     if (key === 'size') customSizeRow.classList.toggle('hidden', S.size !== 'custom');
+    if (key === 'grid') { S.layoutFlipped = false; updateLayoutHint(); }
   });
 }
 bindGroup('grid', 'grid');
 bindGroup('size', 'size');
 bindGroup('scale', 'scale');
+
+// 切換橫/直排
+$('swapLayoutBtn').addEventListener('click', () => {
+  const g = GRIDS[S.grid];
+  if (!g || !g.alt) return;
+  S.layoutFlipped = !S.layoutFlipped;
+  updateLayoutHint();
+});
+
+// 初始化提示
+updateLayoutHint();
 
 customW.addEventListener('input', () => { S.customW = Math.max(1, parseInt(customW.value) || 370); });
 customH.addEventListener('input', () => { S.customH = Math.max(1, parseInt(customH.value) || 320); });
@@ -616,7 +655,7 @@ autoTrimToggle.addEventListener('change', () => { S.autoTrim = autoTrimToggle.ch
 processBtn.addEventListener('click', async () => {
   progressOverlay.classList.remove('hidden');
   S.results = [];
-  const { cols, rows } = GRIDS[S.grid];
+  const { cols, rows } = getGridLayout();
   const tw = S.size === 'custom' ? S.customW : SIZES[S.size].w;
   const th = S.size === 'custom' ? S.customH : SIZES[S.size].h;
   const total = S.files.length * cols * rows;
@@ -989,7 +1028,7 @@ $('previewBtn').addEventListener('click', async () => {
   const tempCv = makeCanvas(img);
   if (S.removeBg) removeWhiteBg(tempCv, S.bgTol, S.bgColor);
 
-  const { cols, rows } = GRIDS[S.grid];
+  const { cols, rows } = getGridLayout();
   S.manualColCuts = detectGridLines(tempCv, cols, 'col');
   S.manualRowCuts = detectGridLines(tempCv, rows, 'row');
 
@@ -1135,7 +1174,7 @@ $('resetLinesBtn').addEventListener('click', async () => {
   const img = await loadImg(fd.dataUrl);
   const tempCv = makeCanvas(img);
   if (S.removeBg) removeWhiteBg(tempCv, S.bgTol, S.bgColor);
-  const { cols, rows } = GRIDS[S.grid];
+  const { cols, rows } = getGridLayout();
   S.manualColCuts = detectGridLines(tempCv, cols, 'col');
   S.manualRowCuts = detectGridLines(tempCv, rows, 'row');
   drawGuideLines();
@@ -1143,7 +1182,7 @@ $('resetLinesBtn').addEventListener('click', async () => {
 });
 
 $('evenLinesBtn').addEventListener('click', () => {
-  const { cols, rows } = GRIDS[S.grid];
+  const { cols, rows } = getGridLayout();
   S.manualColCuts = [0];
   for (let k = 1; k < cols; k++) S.manualColCuts.push(Math.round(S.previewCanvasW * k / cols));
   S.manualColCuts.push(S.previewCanvasW);
