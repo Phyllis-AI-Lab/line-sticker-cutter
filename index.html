@@ -525,6 +525,22 @@ function updateLayoutHint() {
   hint.textContent = `${layout.cols}×${layout.rows}`;
   swapBtn.disabled = !g.alt;
   swapBtn.style.opacity = g.alt ? '1' : '0.4';
+
+  // 同步更新所有 grid 按鈕底下的小字
+  // active 那顆顯示當前實際排法（受 layoutFlipped 影響）
+  // 其他顆顯示各自的預設排法
+  document.querySelectorAll('#gridGroup .opt-btn').forEach(btn => {
+    const key = btn.dataset.grid;
+    const def = GRIDS[key];
+    if (!def) return;
+    const small = btn.querySelector('small');
+    if (!small) return;
+    if (key === S.grid) {
+      small.textContent = `${layout.cols}×${layout.rows}`;
+    } else {
+      small.textContent = `${def.cols}×${def.rows}`;
+    }
+  });
 }
 
 const S = {
