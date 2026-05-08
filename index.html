@@ -661,31 +661,34 @@ function detectGridLines(canvas, count, direction) {
     brightness[i] = sum / cross;
   }
 
-  // 找亮度峰值（分隔線候選）：亮度 > 240 的連續區段取中心
-  const threshold = 240;
-  const candidates = [];
+  // 找亮度帶（分隔線候選）：亮度 > 220 的連續區段，記錄中心與寬度
+  const threshold = 220;
+  const candidates = []; // { center, width }
   let inBright = false, start = 0;
   for (let i = 0; i < size; i++) {
     if (brightness[i] >= threshold && !inBright) { inBright = true; start = i; }
     else if (brightness[i] < threshold && inBright) {
-      candidates.push(Math.round((start + i - 1) / 2));
+      const width = i - start;
+      candidates.push({ center: Math.round((start + i - 1) / 2), width });
       inBright = false;
     }
   }
-  if (inBright) candidates.push(Math.round((start + size - 1) / 2));
+  if (inBright) {
+    const width = size - start;
+    candidates.push({ center: Math.round((start + size - 1) / 2), width });
+  }
 
-  // 從候選中選出 count-1 條最均勻分布的分隔線
-  // 策略：期望位置 = size * k / count，選最近的候選
+  // 從候選中選出 count-1 條分隔線
+  // 策略：期望位置 ±35% 範圍內，優先選最寬的亮帶（最可靠的空白間隔）
   const expected_step = size / count;
   const cuts = [0];
   for (let k = 1; k < count; k++) {
     const expected = expected_step * k;
-    // 在期望位置 ±20% 範圍內找最近候選
-    const margin = expected_step * 0.2;
-    let best = null, bestDist = Infinity;
+    const margin = expected_step * 0.35;
+    let best = null, bestWidth = -1;
     for (const c of candidates) {
-      const dist = Math.abs(c - expected);
-      if (dist < margin && dist < bestDist) { best = c; bestDist = dist; }
+      const dist = Math.abs(c.center - expected);
+      if (dist < margin && c.width > bestWidth) { best = c.center; bestWidth = c.width; }
     }
     // 找不到就用等分
     cuts.push(best !== null ? best : Math.round(expected));
